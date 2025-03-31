@@ -288,7 +288,6 @@ class ConnectionHandler:
             new_llm = llm_module.create_instance(llm_config["type"], llm_config)
 
             start_time = time.time()
-
             # 使用带记忆的对话
             future = asyncio.run_coroutine_threadsafe(self.memory.query_memory(query), self.loop)
             memory_str = future.result()
@@ -424,6 +423,9 @@ class ConnectionHandler:
                 content_arguments = ""
                 for response in llm_responses:
                     content, tools_call = response
+		            if "content" in response:
+		                content = response["content"]
+		                tools_call = None
                     if content is not None and len(content) > 0:
                         if len(response_message) <= 0 and (content == "```" or "<tool_call>" in content):
                             tool_call_flag = True
