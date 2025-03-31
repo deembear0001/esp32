@@ -423,9 +423,9 @@ class ConnectionHandler:
                 content_arguments = ""
                 for response in llm_responses:
                     content, tools_call = response
-		            if "content" in response:
-		                content = response["content"]
-		                tools_call = None
+                    if "content" in response:
+                        content = response["content"]
+                        tools_call = None
                     if content is not None and len(content) > 0:
                         if len(response_message) <= 0 and (content == "```" or "<tool_call>" in content):
                             tool_call_flag = True
