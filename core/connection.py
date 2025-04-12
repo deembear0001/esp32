@@ -132,9 +132,6 @@ class ConnectionHandler:
             await self.websocket.send(json.dumps(self.welcome_msg))
             # Load private configuration if device_id is provided
             bUsePrivateConfig = self.config.get("use_private_config", False)
-            self.logger.bind(tag=TAG).info(
-                f"bUsePrivateConfig: {bUsePrivateConfig}, device_id: {device_id}"
-            )
             if bUsePrivateConfig and device_id:
                 try:
                     self.private_config = PrivateConfig(
@@ -220,49 +217,57 @@ class ConnectionHandler:
             self.prompt = self.private_config.private_config.get("prompt", self.prompt)
         self.dialogue.put(Message(role="system", content=self.prompt))
 
-        """加载插件"""
-        self.func_handler = FunctionHandler(self)
-        self.mcp_manager = MCPManager(self)
         """加载记忆"""
-        device_id = self.headers.get("device-id", None)
-        self.memory.init_memory(device_id, self.llm)
-
-        """为意图识别设置LLM，优先使用专用LLM"""
-        # 检查是否配置了专用的意图识别LLM
-        intent_llm_name = self.config["Intent"]["intent_llm"]["llm"]
-
-        # 记录开始初始化意图识别LLM的时间
-        intent_llm_init_start = time.time()
-
-        if (
-            not self.use_function_call_mode
-            and intent_llm_name
-            and intent_llm_name in self.config["LLM"]
-        ):
-            # 如果配置了专用LLM，则创建独立的LLM实例
-            from core.utils import llm as llm_utils
-
-            intent_llm_config = self.config["LLM"][intent_llm_name]
-            intent_llm_type = intent_llm_config.get("type", intent_llm_name)
-            intent_llm = llm_utils.create_instance(intent_llm_type, intent_llm_config)
-            self.logger.bind(tag=TAG).info(
-                f"为意图识别创建了专用LLM: {intent_llm_name}, 类型: {intent_llm_type}"
-            )
-
-            self.intent.set_llm(intent_llm)
-        else:
-            # 否则使用主LLM
-            self.intent.set_llm(self.llm)
-
-        # 记录意图识别LLM初始化耗时
-        intent_llm_init_time = time.time() - intent_llm_init_start
-
+        self._initialize_memory()
+        """加载意图识别"""
+        self._initialize_intent()
         """加载位置信息"""
         self.client_ip_info = get_ip_info(self.client_ip)
         if self.client_ip_info is not None and "city" in self.client_ip_info:
             self.logger.bind(tag=TAG).info(f"Client ip info: {self.client_ip_info}")
             self.prompt = self.prompt + f"\nuser location:{self.client_ip_info}"
+
             self.dialogue.update_system_message(self.prompt)
+
+    def _initialize_memory(self):
+        """初始化记忆模块"""
+        device_id = self.headers.get("device-id", None)
+        self.memory.init_memory(device_id, self.llm)
+
+    def _initialize_intent(self):
+        """初始化意图识别模块"""
+        # 获取意图识别配置
+        intent_config = self.config["Intent"]
+        intent_type = self.config["selected_module"]["Intent"]
+
+        # 如果使用 nointent，直接返回
+        if intent_type == "nointent":
+            return
+        # 使用 intent_llm 模式
+        elif intent_type == "intent_llm":
+            intent_llm_name = intent_config["intent_llm"]["llm"]
+
+            if intent_llm_name and intent_llm_name in self.config["LLM"]:
+                # 如果配置了专用LLM，则创建独立的LLM实例
+                from core.utils import llm as llm_utils
+
+                intent_llm_config = self.config["LLM"][intent_llm_name]
+                intent_llm_type = intent_llm_config.get("type", intent_llm_name)
+                intent_llm = llm_utils.create_instance(
+                    intent_llm_type, intent_llm_config
+                )
+                self.logger.bind(tag=TAG).info(
+                    f"为意图识别创建了专用LLM: {intent_llm_name}, 类型: {intent_llm_type}"
+                )
+                self.intent.set_llm(intent_llm)
+            else:
+                # 否则使用主LLM
+                self.intent.set_llm(self.llm)
+                self.logger.bind(tag=TAG).info("使用主LLM作为意图识别模型")
+
+        """加载插件"""
+        self.func_handler = FunctionHandler(self)
+        self.mcp_manager = MCPManager(self)
 
         """加载MCP工具"""
         asyncio.run_coroutine_threadsafe(
@@ -411,7 +416,9 @@ class ConnectionHandler:
         """Chat with function calling for intent detection using streaming"""
         if self.isNeedAuth():
             self.llm_finish_task = True
-            future = asyncio.run_coroutine_threadsafe(self._check_and_broadcast_auth_code(), self.loop)
+            future = asyncio.run_coroutine_threadsafe(
+                self._check_and_broadcast_auth_code(), self.loop
+            )
             future.result()
             return True
 
@@ -420,7 +427,7 @@ class ConnectionHandler:
 
         # Define intent functions
         functions = None
-        if hasattr(self, 'func_handler'):
+        if hasattr(self, "func_handler"):
             functions = self.func_handler.get_functions()
         response_message = []
         processed_chars = 0  # 跟踪已处理的字符位置
@@ -471,7 +478,9 @@ class ConnectionHandler:
                         content = response["content"]
                         tools_call = None
                     if content is not None and len(content) > 0:
-                        if len(response_message) <= 0 and (content == "```" or "<tool_call>" in content):
+                        if len(response_message) <= 0 and (
+                            content == "```" or "<tool_call>" in content
+                        ):
                             tool_call_flag = True
 
                     if tools_call is not None:
@@ -510,14 +519,19 @@ class ConnectionHandler:
 
                             # 找到分割点则处理
                             if last_punct_pos != -1:
-                                segment_text_raw = current_text[:last_punct_pos + 1]
-                                segment_text = get_string_no_punctuation_or_emoji(segment_text_raw)
+                                segment_text_raw = current_text[: last_punct_pos + 1]
+                                segment_text = get_string_no_punctuation_or_emoji(
+                                    segment_text_raw
+                                )
                                 if segment_text:
                                     text_index += 1
                                     self.recode_first_last_text(segment_text, text_index)
-                                    future = self.executor.submit(self.speak_and_play, segment_text, text_index)
+                                    future = self.executor.submit(
+                                        self.speak_and_play, segment_text, text_index
+                                    )
                                     self.tts_queue.put(future)
-                                    processed_chars += len(segment_text_raw)  # 更新已处理字符位置
+                                    # 更新已处理字符位置
+                                    processed_chars += len(segment_text_raw)
 
                 # 处理function call
                 if tool_call_flag:
@@ -528,7 +542,9 @@ class ConnectionHandler:
                             try:
                                 content_arguments_json = json.loads(a)
                                 function_name = content_arguments_json["name"]
-                                function_arguments = json.dumps(content_arguments_json["arguments"], ensure_ascii=False)
+                                function_arguments = json.dumps(
+                                    content_arguments_json["arguments"], ensure_ascii=False
+                                )
                                 function_id = str(uuid.uuid4().hex)
                             except Exception as e:
                                 bHasError = True
@@ -537,7 +553,9 @@ class ConnectionHandler:
                             bHasError = True
                             response_message.append(content_arguments)
                         if bHasError:
-                            self.logger.bind(tag=TAG).error(f"function call error: {content_arguments}")
+                            self.logger.bind(tag=TAG).error(
+                                f"function call error: {content_arguments}"
+                            )
                         else:
                             function_arguments = json.loads(function_arguments)
                     if not bHasError:
@@ -554,7 +572,9 @@ class ConnectionHandler:
                             result = self._handle_mcp_tool_call(function_call_data)
                         else:
                             # 处理系统函数
-                            result = self.func_handler.handle_llm_function_call(self, function_call_data)
+                            result = self.func_handler.handle_llm_function_call(
+                                self, function_call_data
+                            )
                         self._handle_function_result(result, function_call_data, text_index+1)
 
                 # 处理最后剩余的文本
@@ -565,7 +585,9 @@ class ConnectionHandler:
                     if segment_text:
                         text_index += 1
                         self.recode_first_last_text(segment_text, text_index)
-                        future = self.executor.submit(self.speak_and_play, segment_text, text_index)
+                        future = self.executor.submit(
+                            self.speak_and_play, segment_text, text_index
+                        )
                         self.tts_queue.put(future)
 
                 # 存储对话内容
@@ -821,7 +843,8 @@ class ConnectionHandler:
     async def close(self, ws=None):
         """资源清理方法"""
         # 清理MCP资源
-        await self.mcp_manager.cleanup_all()
+        if hasattr(self, "mcp_manager") and self.mcp_manager:
+            await self.mcp_manager.cleanup_all()
 
         # 触发停止事件并清理资源
         if self.stop_event:
